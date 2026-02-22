@@ -1,0 +1,11 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build ./..."
+full_bin = "go run ./cmd/cli -- \"What day is it today?\""
+include_ext = ["go", "env", "toml"]
+exclude_dir = ["tmp", "vendor", ".git"]
+
+[log]
+time = true
