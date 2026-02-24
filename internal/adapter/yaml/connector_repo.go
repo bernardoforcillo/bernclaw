@@ -10,6 +10,14 @@ import (
 	"github.com/bernardoforcillo/bernclaw/internal/domain"
 )
 
+// expandConnector resolves environment variable references (e.g. ${MY_VAR})
+// in the connector's mutable credential fields.
+func expandConnector(c domain.Connector) domain.Connector {
+	c.APIKey = os.ExpandEnv(c.APIKey)
+	c.BaseURL = os.ExpandEnv(c.BaseURL)
+	return c
+}
+
 // ConnectorRepo is a file-system-backed implementation of port.ConnectorRepository.
 // Each connector is stored as connector-<name>.yaml inside BaseDir.
 type ConnectorRepo struct {
@@ -104,12 +112,12 @@ func (r ConnectorRepo) ListConnectors() ([]domain.Connector, error) {
 			name = strings.TrimSpace(res.Metadata.Name)
 		}
 
-		items = append(items, domain.Connector{
+		items = append(items, expandConnector(domain.Connector{
 			Name:     name,
 			Provider: strings.TrimSpace(res.Spec.Provider),
 			APIKey:   strings.TrimSpace(res.Spec.APIKey),
 			BaseURL:  strings.TrimSpace(res.Spec.BaseURL),
-		})
+		}))
 	}
 
 	sort.Slice(items, func(i, j int) bool {
@@ -139,12 +147,12 @@ func (r ConnectorRepo) GetConnector(name string) (domain.Connector, error) {
 		displayName = strings.TrimSpace(res.Metadata.Name)
 	}
 
-	return domain.Connector{
+	return expandConnector(domain.Connector{
 		Name:     displayName,
 		Provider: strings.TrimSpace(res.Spec.Provider),
 		APIKey:   strings.TrimSpace(res.Spec.APIKey),
 		BaseURL:  strings.TrimSpace(res.Spec.BaseURL),
-	}, nil
+	}), nil
 }
 
 // ---- path helpers ---------------------------------------------------------- //

@@ -5,6 +5,7 @@
 package app
 
 import (
+	"log"
 	"path/filepath"
 
 	"github.com/bernardoforcillo/bernclaw/internal/adapter/graph"
@@ -20,6 +21,7 @@ type Workspace struct {
 	Connectors   port.ConnectorRepository
 	Teams        port.GraphStore       // Stores team coordination, roles, relationships
 	Orchestrator port.TeamOrchestrator // Routes tasks to agents based on role/expertise
+	CRDs         *yamlrepo.CRDRegistry // Loaded view of all .bernclaw/ CRD resources
 }
 
 // NewWorkspace creates a Workspace backed by YAML files for agents/connectors
@@ -45,9 +47,22 @@ func defaultGraphStore() port.GraphStore {
 
 // DefaultWorkspace returns a Workspace rooted at the conventional
 // .bernclaw/ sub-directories relative to the current working directory.
+// All CRD resources are loaded from .bernclaw/ on startup.
 func DefaultWorkspace() Workspace {
-	return NewWorkspace(
+	ws := NewWorkspace(
 		filepath.Join(".bernclaw", "agents"),
 		filepath.Join(".bernclaw", "connectors"),
 	)
+
+	// Load all CRD resources (agents, teams, tools, souls) from .bernclaw/
+	registry := yamlrepo.NewCRDRegistry(".bernclaw")
+	if err := registry.Load(); err != nil {
+		log.Printf("[workspace] CRD registry load warning: %v", err)
+	} else {
+		log.Printf("[workspace] CRD registry loaded: %d agents, %d teams, %d tools, %d souls",
+			len(registry.Agents), len(registry.Teams), len(registry.Tools), len(registry.Souls))
+	}
+	ws.CRDs = registry
+
+	return ws
 }

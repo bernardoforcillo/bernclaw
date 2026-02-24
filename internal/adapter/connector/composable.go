@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/bernardoforcillo/bernclaw/internal/adapter/auth"
+	genaiAdapter "github.com/bernardoforcillo/bernclaw/internal/adapter/genai"
+	"github.com/bernardoforcillo/bernclaw/internal/adapter/openaicompat"
 	"github.com/bernardoforcillo/bernclaw/internal/domain"
 	"github.com/bernardoforcillo/bernclaw/internal/port"
 )
@@ -92,7 +94,7 @@ func (c *ComposableConnector) GetLLMClient(ctx context.Context) (port.LLMClient,
 }
 
 // createOpenAIClient creates an OpenAI-compatible client.
-func (c *ComposableConnector) createOpenAIClient(ctx context.Context) (port.LLMClient, error) {
+func (c *ComposableConnector) createOpenAIClient(_ context.Context) (port.LLMClient, error) {
 	apiKey, err := c.Strategy.GetCredential("api-key")
 	if err != nil {
 		return nil, fmt.Errorf("composable connector: failed to get api key: %w", err)
@@ -103,14 +105,10 @@ func (c *ComposableConnector) createOpenAIClient(ctx context.Context) (port.LLMC
 		baseURL = "https://api.openai.com/v1"
 	}
 
-	// TODO: Import the openaicompat package and create client
-	// This requires the package to be available
-	// For now, return a placeholder error with the credentials prepared
-	_ = apiKey  // apiKey would be passed to openaicompat.NewClient()
-	_ = baseURL // baseURL would be passed to openaicompat.NewClient()
-	_ = ctx     // ctx would be passed for request context
-
-	return nil, errors.New("composable connector: openai client creation not yet implemented in this stub")
+	return openaicompat.NewClient(openaicompat.Config{
+		APIKey:  apiKey,
+		BaseURL: baseURL,
+	})
 }
 
 // createVertexClient creates a Google Vertex AI client using Service Account auth.
@@ -146,10 +144,12 @@ func (c *ComposableConnector) createAIStudioClient(ctx context.Context) (port.LL
 		return nil, fmt.Errorf("composable connector: failed to get api key: %w", err)
 	}
 
-	// AI Studio uses API key (similar to OpenAI)
-	_ = apiKey
+	modelName := c.Config["model"]
+	if modelName == "" {
+		modelName = "gemini-2.0-flash-preview"
+	}
 
-	return nil, errors.New("composable connector: ai studio client creation not yet implemented in this stub")
+	return genaiAdapter.NewAIStudioClient(ctx, apiKey, modelName)
 }
 
 // FromDomainConnector converts a domain.Connector to a ComposableConnector.

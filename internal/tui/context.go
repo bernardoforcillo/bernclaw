@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bernardoforcillo/bernclaw/internal/adapter/genai"
 	"github.com/bernardoforcillo/bernclaw/internal/adapter/openaicompat"
 	"github.com/bernardoforcillo/bernclaw/internal/app"
 	"github.com/bernardoforcillo/bernclaw/internal/config"
@@ -316,7 +317,7 @@ func (m AppContext) handleWindowSize(msg tea.WindowSizeMsg) AppContext {
 func (m AppContext) handleAssistantReply(msg assistantReplyMsg) AppContext {
 	m.isSending = false
 	if msg.err != nil {
-		m.statusText = "Request failed: " + msg.err.Error()
+		m.statusText = msg.err.Error()
 		m.refreshViewport()
 		return m
 	}
@@ -496,6 +497,8 @@ func buildLLMClientFactory() port.LLMClientFactory {
 				APIKey:  connector.APIKey,
 				BaseURL: connector.BaseURL,
 			})
+		case domain.ConnectorProviderGeminiAI, domain.ConnectorProviderGeminiAIAlt:
+			return genai.NewAIStudioClient(context.Background(), connector.APIKey, "")
 		default:
 			return nil, fmt.Errorf("provider %q is not supported yet", connector.Provider)
 		}

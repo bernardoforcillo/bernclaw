@@ -4,6 +4,7 @@ import "strings"
 
 const (
 	ConnectorProviderGeminiAI     = "gemini-ai"
+	ConnectorProviderGeminiAIAlt  = "google-ai-studio"
 	ConnectorProviderGeminiVertex = "gemini-vertex"
 	ConnectorProviderOpenAICompat = "openai-compatible"
 )
@@ -20,7 +21,7 @@ type Connector struct {
 // recognised connector providers.
 func IsSupportedProvider(provider string) bool {
 	switch strings.TrimSpace(provider) {
-	case ConnectorProviderGeminiAI, ConnectorProviderGeminiVertex, ConnectorProviderOpenAICompat:
+	case ConnectorProviderGeminiAI, ConnectorProviderGeminiAIAlt, ConnectorProviderGeminiVertex, ConnectorProviderOpenAICompat:
 		return true
 	default:
 		return false
