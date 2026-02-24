@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/bernardoforcillo/bernclaw/internal/adapter/graph"
+	"github.com/bernardoforcillo/bernclaw/internal/adapter/system"
+	fs "github.com/bernardoforcillo/bernclaw/internal/adapter/workspace"
 	yamlrepo "github.com/bernardoforcillo/bernclaw/internal/adapter/yaml"
 	"github.com/bernardoforcillo/bernclaw/internal/port"
 )
@@ -22,6 +24,9 @@ type Workspace struct {
 	Teams        port.GraphStore       // Stores team coordination, roles, relationships
 	Orchestrator port.TeamOrchestrator // Routes tasks to agents based on role/expertise
 	CRDs         *yamlrepo.CRDRegistry // Loaded view of all .bernclaw/ CRD resources
+	System       port.SystemService    // Access to system processes
+	Files        port.FileService      // Access to workspace files
+	Tools        *ToolExecutor         // Executes tools against the workspace
 }
 
 // NewWorkspace creates a Workspace backed by YAML files for agents/connectors
@@ -32,11 +37,17 @@ func NewWorkspace(agentDir string, connectorDir string) Workspace {
 	graphStore := defaultGraphStore()
 	teamService := &TeamService{graphStore: graphStore}
 
+	sys := system.NewSystemService()
+	files := fs.NewFileSystemWorkspace(".")
+
 	return Workspace{
 		Agents:       yamlrepo.NewAgentRepo(agentDir),
 		Connectors:   yamlrepo.NewConnectorRepo(connectorDir),
 		Teams:        graphStore,
 		Orchestrator: teamService,
+		System:       sys,
+		Files:        files,
+		Tools:        NewToolExecutor(files, sys),
 	}
 }
 

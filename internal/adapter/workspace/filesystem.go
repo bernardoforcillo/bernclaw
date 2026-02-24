@@ -3,7 +3,8 @@ package workspace
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,22 +33,25 @@ func NewFileSystemWorkspace(rootPath string) *FileSystemWorkspace {
 	}
 }
 
+func checkPath(absPath, absRoot string) bool {
+	return absPath == absRoot || strings.HasPrefix(absPath, absRoot+string(os.PathSeparator))
+}
+
 // ReadFile reads a file from the workspace
 func (w *FileSystemWorkspace) ReadFile(relativePath string) (string, error) {
 	fullPath := filepath.Join(w.rootPath, relativePath)
 
-	// Security: prevent path traversal
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 
 	absRoot, _ := filepath.Abs(w.rootPath)
-	if !strings.HasPrefix(absPath, absRoot) {
+	if !checkPath(absPath, absRoot) {
 		return "", fmt.Errorf("path traversal not allowed: %s", relativePath)
 	}
 
-	content, err := ioutil.ReadFile(absPath)
+	content, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file %s: %w", relativePath, err)
 	}
@@ -59,20 +63,207 @@ func (w *FileSystemWorkspace) ReadFile(relativePath string) (string, error) {
 func (w *FileSystemWorkspace) WriteFile(relativePath string, content string) error {
 	fullPath := filepath.Join(w.rootPath, relativePath)
 
-	// Security: prevent path traversal
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
 	}
 
 	absRoot, _ := filepath.Abs(w.rootPath)
-	if !strings.HasPrefix(absPath, absRoot) {
+	if !checkPath(absPath, absRoot) {
 		return fmt.Errorf("path traversal not allowed: %s", relativePath)
 	}
 
-	err = ioutil.WriteFile(absPath, []byte(content), 0644)
+	err = os.WriteFile(absPath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write file %s: %w", relativePath, err)
+	}
+
+	return nil
+}
+
+// ListFiles lists files in the workspace
+func (w *FileSystemWorkspace) ListFiles(relativePath string) ([]string, error) {
+	fullPath := filepath.Join(w.rootPath, relativePath)
+
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	absRoot, _ := filepath.Abs(w.rootPath)
+	if !checkPath(absPath, absRoot) {
+		return nil, fmt.Errorf("path traversal not allowed: %s", relativePath)
+	}
+
+	files, err := os.ReadDir(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files in %s: %w", relativePath, err)
+	}
+
+	var names []string
+	for _, f := range files {
+		name := f.Name()
+		if f.IsDir() {
+			name += "/"
+		}
+		names = append(names, name)
+	}
+
+	return names, nil
+}
+
+// DeleteFile deletes a file or directory from the workspace
+func (w *FileSystemWorkspace) DeleteFile(relativePath string) error {
+	fullPath := filepath.Join(w.rootPath, relativePath)
+
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	absRoot, _ := filepath.Abs(w.rootPath)
+	if !checkPath(absPath, absRoot) {
+		return fmt.Errorf("path traversal not allowed: %s", relativePath)
+	}
+
+	if absPath == absRoot {
+		return fmt.Errorf("cannot delete workspace root")
+	}
+
+	err = os.RemoveAll(absPath)
+	if err != nil {
+		return fmt.Errorf("failed to delete %s: %w", relativePath, err)
+	}
+
+	return nil
+}
+
+// MoveFile moves or renames a file in the workspace
+func (w *FileSystemWorkspace) MoveFile(source, dest string) error {
+	fullSource := filepath.Join(w.rootPath, source)
+	fullDest := filepath.Join(w.rootPath, dest)
+
+	absSource, err := filepath.Abs(fullSource)
+	if err != nil {
+		return fmt.Errorf("invalid source path: %w", err)
+	}
+
+	absDest, err := filepath.Abs(fullDest)
+	if err != nil {
+		return fmt.Errorf("invalid dest path: %w", err)
+	}
+
+	absRoot, _ := filepath.Abs(w.rootPath)
+	if !checkPath(absSource, absRoot) || !checkPath(absDest, absRoot) {
+		return fmt.Errorf("path traversal not allowed")
+	}
+
+	err = os.Rename(absSource, absDest)
+	if err != nil {
+		return fmt.Errorf("failed to move %s to %s: %w", source, dest, err)
+	}
+
+	return nil
+}
+
+// CopyFile copies a file or directory in the workspace
+func (w *FileSystemWorkspace) CopyFile(source, dest string) error {
+	fullSource := filepath.Join(w.rootPath, source)
+	fullDest := filepath.Join(w.rootPath, dest)
+
+	absSource, err := filepath.Abs(fullSource)
+	if err != nil {
+		return fmt.Errorf("invalid source path: %w", err)
+	}
+
+	absDest, err := filepath.Abs(fullDest)
+	if err != nil {
+		return fmt.Errorf("invalid dest path: %w", err)
+	}
+
+	absRoot, _ := filepath.Abs(w.rootPath)
+	if !checkPath(absSource, absRoot) || !checkPath(absDest, absRoot) {
+		return fmt.Errorf("path traversal not allowed")
+	}
+
+	info, err := os.Stat(absSource)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return copyDir(absSource, absDest)
+	}
+	return copyFile(absSource, absDest)
+}
+
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
+}
+
+func copyDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(dst, info.Mode())
+	if err != nil {
+		return err
+	}
+
+	infos, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range infos {
+		srcPath := filepath.Join(src, f.Name())
+		dstPath := filepath.Join(dst, f.Name())
+
+		if f.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// CreateDirectory creates a new directory in the workspace
+func (w *FileSystemWorkspace) CreateDirectory(relativePath string) error {
+	fullPath := filepath.Join(w.rootPath, relativePath)
+
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	absRoot, _ := filepath.Abs(w.rootPath)
+	if !checkPath(absPath, absRoot) {
+		return fmt.Errorf("path traversal not allowed: %s", relativePath)
+	}
+
+	err = os.MkdirAll(absPath, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", relativePath, err)
 	}
 
 	return nil
