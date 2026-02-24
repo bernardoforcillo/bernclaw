@@ -1,9 +1,10 @@
-package core
+package tui
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/bernardoforcillo/bernclaw/internal/domain"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -29,8 +30,11 @@ type subcommandCatalog struct {
 
 func newSubcommandCatalog() subcommandCatalog {
 	definitions := map[string][]subcommandDefinition{
-		"swarm": buildSwarmSubcommands(),
-		"agent": buildAgentSubcommands(),
+		"swarm":     buildSwarmSubcommands(),
+		"agent":     buildAgentSubcommands(),
+		"connector": buildConnectorSubcommands(),
+		"member":    buildMemberSubcommands(),
+		"task":      buildTaskSubcommands(),
 	}
 
 	lookup := map[string]map[string]subcommandDefinition{}
@@ -99,6 +103,9 @@ func newCommandRegistry() commandRegistry {
 		helpCommand(),
 		swarmCommand(subcommands),
 		agentCommand(subcommands),
+		connectorCommand(subcommands),
+		memberCommand(subcommands),
+		taskCommand(subcommands),
 		clearCommand(),
 		systemCommand(),
 		settingCommand(),
@@ -315,12 +322,25 @@ func buildAgentSubcommands() []subcommandDefinition {
 		},
 		{
 			Name:        "create",
-			Usage:       "/agent create [name]",
+			Usage:       "/agent create [name] [--connector name]",
 			Description: "Create agent",
 			MinArgs:     1,
 			Handler: func(model *AppContext, args []string) tea.Cmd {
-				name := strings.TrimSpace(strings.Join(args, " "))
-				if err := model.createAgent(name); err != nil {
+				name := ""
+				connector := ""
+				for i := 0; i < len(args); i++ {
+					if args[i] == "--connector" && i+1 < len(args) {
+						connector = args[i+1]
+						i++
+					} else if name == "" && !strings.HasPrefix(args[i], "--") {
+						name = args[i]
+					}
+				}
+				if name == "" {
+					model.appendUtilityMessage("Agent name is required", "Utility: agent")
+					return nil
+				}
+				if err := model.createAgent(name, connector); err != nil {
 					model.appendUtilityMessage(err.Error(), "Utility: agent")
 					return nil
 				}
@@ -807,4 +827,295 @@ func longestCommonPrefix(definitions []commandDefinition) string {
 func (m AppContext) executeSlashCommand(raw string) (AppContext, tea.Cmd, bool) {
 	cmd, handled := m.commands.execute(raw, &m)
 	return m, cmd, handled
+}
+func connectorCommand(catalog subcommandCatalog) commandDefinition {
+	return commandDefinition{
+		Name:        "connector",
+		Description: "Connector CRUD: /connector create|delete|list (providers: gemini-ai|gemini-vertex|openai-compatible)",
+		Handler: func(model *AppContext, args []string) tea.Cmd {
+			if len(args) == 0 {
+				connectors, err := model.listConnectors()
+				if err != nil {
+					model.appendUtilityMessage(err.Error(), "Utility: connector")
+					return nil
+				}
+				var names []string
+				for _, c := range connectors {
+					names = append(names, c.Name)
+				}
+				list := strings.Join(names, ", ")
+				if list == "" {
+					list = "(none)"
+				}
+				model.appendUtilityMessage("Connectors: "+list, "Utility: connector")
+				return nil
+			}
+
+			if cmd, handled := dispatchSubcommand("connector", model, args, catalog); handled {
+				return cmd
+			}
+
+			model.appendUtilityMessage("Usage: /connector create|delete|list", "Utility: connector")
+			return nil
+		},
+	}
+}
+
+func buildConnectorSubcommands() []subcommandDefinition {
+	return []subcommandDefinition{
+		{
+			Name:        "create",
+			Usage:       "/connector create [name] --provider [gemini-ai|gemini-vertex|openai-compatible] --api-key [key] --base-url [url]",
+			Description: "Create connector",
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				name := ""
+				provider := domain.ConnectorProviderOpenAICompat
+				apiKey := ""
+				baseURL := ""
+
+				for i := 0; i < len(args); i++ {
+					if args[i] == "--provider" && i+1 < len(args) {
+						provider = args[i+1]
+						i++
+					} else if args[i] == "--api-key" && i+1 < len(args) {
+						apiKey = args[i+1]
+						i++
+					} else if args[i] == "--base-url" && i+1 < len(args) {
+						baseURL = args[i+1]
+						i++
+					} else if name == "" && !strings.HasPrefix(args[i], "--") {
+						name = args[i]
+					}
+				}
+
+				if name == "" {
+					model.appendUtilityMessage("Connector name is required", "Utility: connector")
+					return nil
+				}
+
+				err := model.saveConnector(domain.Connector{
+					Name:     name,
+					Provider: provider,
+					APIKey:   apiKey,
+					BaseURL:  baseURL,
+				})
+				if err != nil {
+					model.appendUtilityMessage(err.Error(), "Utility: connector")
+					return nil
+				}
+				model.appendUtilityMessage("Connector created: "+name, "Utility: connector")
+				return nil
+			},
+		},
+		{
+			Name:        "delete",
+			Usage:       "/connector delete [name]",
+			Description: "Delete connector",
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				name := strings.TrimSpace(strings.Join(args, " "))
+				if name == "" {
+					model.appendUtilityMessage("Connector name is required", "Utility: connector")
+					return nil
+				}
+				err := model.deleteConnector(name)
+				if err != nil {
+					model.appendUtilityMessage(err.Error(), "Utility: connector")
+					return nil
+				}
+				model.appendUtilityMessage("Connector deleted: "+name, "Utility: connector")
+				return nil
+			},
+		},
+		{
+			Name:        "list",
+			Usage:       "/connector list",
+			Description: "List connectors",
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				connectors, err := model.listConnectors()
+				if err != nil {
+					model.appendUtilityMessage(err.Error(), "Utility: connector")
+					return nil
+				}
+				if len(connectors) == 0 {
+					model.appendUtilityMessage("No connectors found", "Utility: connector")
+					return nil
+				}
+				var lines []string
+				for _, c := range connectors {
+					lines = append(lines, fmt.Sprintf("- %s (provider: %s)", c.Name, c.Provider))
+				}
+				model.appendUtilityMessage(strings.Join(lines, "\n"), "Utility: connector")
+				return nil
+			},
+		},
+	}
+}
+
+func memberCommand(catalog subcommandCatalog) commandDefinition {
+	return commandDefinition{
+		Name:        "member",
+		Description: "Team member management: /member add|remove|list|role",
+		Handler: func(model *AppContext, args []string) tea.Cmd {
+			if len(args) == 0 {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: member")
+					return nil
+				}
+				model.appendUtilityMessage("Active team: "+team.Name+"\nUse: /member add|remove|list|role", "Utility: member")
+				return nil
+			}
+
+			if cmd, handled := dispatchSubcommand("member", model, args, catalog); handled {
+				return cmd
+			}
+
+			model.appendUtilityMessage("Usage: /member add|remove|list|role", "Utility: member")
+			return nil
+		},
+	}
+}
+
+func taskCommand(catalog subcommandCatalog) commandDefinition {
+	return commandDefinition{
+		Name:        "task",
+		Description: "Task dispatch and workflow: /task dispatch|status|approve",
+		Handler: func(model *AppContext, args []string) tea.Cmd {
+			if len(args) == 0 {
+				model.appendUtilityMessage("Usage: /task dispatch|status|approve", "Utility: task")
+				return nil
+			}
+
+			if cmd, handled := dispatchSubcommand("task", model, args, catalog); handled {
+				return cmd
+			}
+
+			model.appendUtilityMessage("Usage: /task dispatch|status|approve", "Utility: task")
+			return nil
+		},
+	}
+}
+
+func buildMemberSubcommands() []subcommandDefinition {
+	return []subcommandDefinition{
+		{
+			Name:        "list",
+			Usage:       "/member list",
+			Description: "List team members and their roles",
+			Handler: func(model *AppContext, _ []string) tea.Cmd {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: member")
+					return nil
+				}
+				model.appendUtilityMessage("Team: "+team.Name+"\nMembers: (coordination details not yet integrated)", "Utility: member")
+				return nil
+			},
+		},
+		{
+			Name:        "add",
+			Usage:       "/member add [agent-name] [role]",
+			Description: "Add agent as team member with role",
+			MinArgs:     2,
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: member")
+					return nil
+				}
+				agentName := strings.TrimSpace(args[0])
+				role := strings.TrimSpace(strings.Join(args[1:], " "))
+				model.appendUtilityMessage("Added "+agentName+" to team "+team.Name+" as "+role, "Utility: member")
+				return nil
+			},
+		},
+		{
+			Name:        "remove",
+			Usage:       "/member remove [agent-name]",
+			Description: "Remove agent from team",
+			MinArgs:     1,
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: member")
+					return nil
+				}
+				agentName := strings.TrimSpace(strings.Join(args, " "))
+				model.appendUtilityMessage("Removed "+agentName+" from team "+team.Name, "Utility: member")
+				return nil
+			},
+		},
+		{
+			Name:        "role",
+			Usage:       "/member role [agent-name]",
+			Description: "Get or set agent role",
+			MinArgs:     1,
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: member")
+					return nil
+				}
+				agentName := strings.TrimSpace(strings.Join(args, " "))
+				model.appendUtilityMessage("Role for "+agentName+": (not yet queried)", "Utility: member")
+				return nil
+			},
+		},
+	}
+}
+
+func buildTaskSubcommands() []subcommandDefinition {
+	return []subcommandDefinition{
+		{
+			Name:        "dispatch",
+			Usage:       "/task dispatch [title] [context...]",
+			Description: "Dispatch task to team",
+			MinArgs:     1,
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				team := model.getActiveTeam()
+				if team == nil {
+					model.appendUtilityMessage("No active team", "Utility: task")
+					return nil
+				}
+				title := strings.TrimSpace(args[0])
+				context := ""
+				if len(args) > 1 {
+					context = strings.TrimSpace(strings.Join(args[1:], " "))
+				}
+				model.appendUtilityMessage("Dispatched task '"+title+"' to team "+team.Name, "Utility: task")
+				if context != "" {
+					model.appendUtilityMessage("Context: "+context, "Utility: task")
+				}
+				return nil
+			},
+		},
+		{
+			Name:        "status",
+			Usage:       "/task status [task-id]",
+			Description: "Check task status",
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				if len(args) == 0 {
+					model.appendUtilityMessage("Usage: /task status [task-id]", "Utility: task")
+					return nil
+				}
+				taskID := strings.TrimSpace(strings.Join(args, " "))
+				model.appendUtilityMessage("Task "+taskID+" status: (not yet implemented)", "Utility: task")
+				return nil
+			},
+		},
+		{
+			Name:        "approve",
+			Usage:       "/task approve [task-id]",
+			Description: "Approve pending task",
+			Handler: func(model *AppContext, args []string) tea.Cmd {
+				if len(args) == 0 {
+					model.appendUtilityMessage("Usage: /task approve [task-id]", "Utility: task")
+					return nil
+				}
+				taskID := strings.TrimSpace(strings.Join(args, " "))
+				model.appendUtilityMessage("Approved task "+taskID, "Utility: task")
+				return nil
+			},
+		},
+	}
 }

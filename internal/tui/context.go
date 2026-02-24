@@ -1,4 +1,4 @@
-package core
+package tui
 
 import (
 	"context"
@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bernardoforcillo/bernclaw/internal/agent"
+	"github.com/bernardoforcillo/bernclaw/internal/adapter/openaicompat"
+	"github.com/bernardoforcillo/bernclaw/internal/app"
 	"github.com/bernardoforcillo/bernclaw/internal/config"
-	"github.com/bernardoforcillo/bernclaw/internal/connectors"
+	"github.com/bernardoforcillo/bernclaw/internal/domain"
+	"github.com/bernardoforcillo/bernclaw/internal/port"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -79,42 +81,38 @@ type assistantReplyMsg struct {
 	err  error
 }
 
-type chatCompletionClient interface {
-	CreateChatCompletion(ctx context.Context, req connectors.ChatCompletionRequest) (*connectors.ChatCompletionResponse, error)
-}
-
 const (
 	defaultStatusText     = "Enter: send • ↑/↓: history • Ctrl+R: search • Tab: complete command • Ctrl+C: quit"
 	maxVisibleSuggestions = 6
 )
 
 type AppContext struct {
-	cfg              config.Config
-	client           chatCompletionClient
-	commands         commandRegistry
-	agents           agentRegistryState
-	commandHistory   commandHistoryState
-	history          []connectors.ChatMessage
-	viewport         viewport.Model
-	input            textarea.Model
-	settingsInput    textarea.Model
-	width            int
-	height           int
-	isReady          bool
-	isSending        bool
-	inSettings       bool
-	statusText       string
-	suggestions      suggestionState
-	suggestionArmed  bool
+	cfg             config.Config
+	commands        commandRegistry
+	agents          agentRegistryState
+	chat            *app.ChatService
+	commandHistory  commandHistoryState
+	history         []domain.Message
+	viewport        viewport.Model
+	input           textarea.Model
+	settingsInput   textarea.Model
+	width           int
+	height          int
+	isReady         bool
+	isSending       bool
+	inSettings      bool
+	statusText      string
+	suggestions     suggestionState
+	suggestionArmed bool
 }
 
-func RunChatUI(cfg config.Config, client chatCompletionClient) error {
-	program := tea.NewProgram(newAppContext(cfg, client), tea.WithAltScreen())
+func RunChatUI(cfg config.Config) error {
+	program := tea.NewProgram(newAppContext(cfg), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
-func newAppContext(cfg config.Config, client chatCompletionClient) AppContext {
+func newAppContext(cfg config.Config) AppContext {
 	input := textarea.New()
 	input.Placeholder = "Type message or /command (Tab to complete)"
 	input.Prompt = "› "
@@ -129,23 +127,26 @@ func newAppContext(cfg config.Config, client chatCompletionClient) AppContext {
 	settingsInput.SetHeight(10)
 	settingsInput.ShowLineNumbers = false
 
-	history := make([]connectors.ChatMessage, 0, 32)
+	history := make([]domain.Message, 0, 32)
 
 	status := defaultStatusText
-	store := agent.NewResourceStore(filepath.Join(".bernclaw", "agents"))
+	workspace := app.DefaultWorkspace()
+
+	// Factory selects the right LLM adapter based on the connector's provider.
+	factory := buildLLMClientFactory()
 
 	model := AppContext{
-		cfg:              cfg,
-		client:           client,
-		commands:         newCommandRegistry(),
-		agents:           newAgentRegistryState(store, cfg.OpenAI.Model),
-		commandHistory:   newCommandHistoryState(filepath.Join(".bernclaw", ".commands_history")),
-		history:          history,
-		input:            input,
-		settingsInput:    settingsInput,
-		statusText:       status,
-		suggestions:      newSuggestionState(maxVisibleSuggestions),
-		suggestionArmed:  false,
+		cfg:             cfg,
+		commands:        newCommandRegistry(),
+		agents:          newAgentRegistryState(workspace.Agents, workspace.Connectors, "gpt-4o"),
+		chat:            app.NewChatService(workspace.Connectors, factory),
+		commandHistory:  newCommandHistoryState(filepath.Join(".bernclaw", ".commands_history")),
+		history:         history,
+		input:           input,
+		settingsInput:   settingsInput,
+		statusText:      status,
+		suggestions:     newSuggestionState(maxVisibleSuggestions),
+		suggestionArmed: false,
 	}
 
 	if err := model.agents.loadStoredResources(); err != nil {
@@ -320,7 +321,7 @@ func (m AppContext) handleAssistantReply(msg assistantReplyMsg) AppContext {
 		return m
 	}
 
-	m.history = append(m.history, connectors.ChatMessage{Role: "assistant", Content: msg.text})
+	m.history = append(m.history, domain.Message{Role: "assistant", Content: msg.text})
 	m.statusText = "Response received • Enter: send • Ctrl+C: quit"
 	m.refreshViewport()
 	return m
@@ -415,7 +416,7 @@ func (m AppContext) handleMainKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		m.history = append(m.history, connectors.ChatMessage{Role: "user", Content: text})
+		m.history = append(m.history, domain.Message{Role: "user", Content: text})
 		m.input.Reset()
 		m.isSending = true
 		m.statusText = "Sending..."
@@ -429,9 +430,17 @@ func (m AppContext) handleMainKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		connectorName, connectorErr := m.resolveActiveConnectorName()
+		if connectorErr != nil {
+			m.isSending = false
+			m.statusText = connectorErr.Error()
+			m.refreshViewport()
+			return m, nil
+		}
+
 		historyCopy := buildAPIHistory(m.history)
 		historyCopy = m.withAgentSystemPrompt(historyCopy)
-		return m, requestAssistantReply(m.client, m.cfg, modelName, historyCopy)
+		return m, requestAssistantReply(m.chat, connectorName, modelName, historyCopy)
 	}
 
 	var inputCmd tea.Cmd
@@ -463,11 +472,11 @@ func (m *AppContext) openSettings() {
 }
 
 func (m *AppContext) resetConversation() {
-	m.history = make([]connectors.ChatMessage, 0, 1)
+	m.history = make([]domain.Message, 0, 1)
 }
 
 func (m *AppContext) appendUtilityMessage(content string, status string) {
-	m.history = append(m.history, connectors.ChatMessage{Role: "utility", Content: content})
+	m.history = append(m.history, domain.Message{Role: "utility", Content: content})
 	m.statusText = status
 	m.refreshViewport()
 }
@@ -477,35 +486,48 @@ func (m *AppContext) refreshViewport() {
 	m.viewport.GotoBottom()
 }
 
-func requestAssistantReply(client chatCompletionClient, cfg config.Config, modelName string, history []connectors.ChatMessage) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		cancel := func() {}
-		if cfg.OpenAI.TimeoutSeconds > 0 {
-			ctx, cancel = context.WithTimeout(context.Background(), time.Duration(cfg.OpenAI.TimeoutSeconds)*time.Second)
+// buildLLMClientFactory returns a port.LLMClientFactory that selects the
+// correct adapter implementation based on the connector's provider field.
+func buildLLMClientFactory() port.LLMClientFactory {
+	return func(connector domain.Connector) (port.LLMClient, error) {
+		switch strings.TrimSpace(connector.Provider) {
+		case domain.ConnectorProviderOpenAICompat:
+			return openaicompat.NewClient(openaicompat.Config{
+				APIKey:  connector.APIKey,
+				BaseURL: connector.BaseURL,
+			})
+		default:
+			return nil, fmt.Errorf("provider %q is not supported yet", connector.Provider)
 		}
-		defer cancel()
-
-		resp, err := client.CreateChatCompletion(ctx, connectors.ChatCompletionRequest{
-			Model:       modelName,
-			Messages:    history,
-			Temperature: cfg.OpenAI.Temperature,
-			MaxTokens:   cfg.OpenAI.MaxTokens,
-			Stream:      true,
-		})
-		if err != nil {
-			return assistantReplyMsg{err: err}
-		}
-		if len(resp.Choices) == 0 {
-			return assistantReplyMsg{err: fmt.Errorf("empty response")}
-		}
-
-		return assistantReplyMsg{text: strings.TrimSpace(resp.Choices[0].Message.Content)}
 	}
 }
 
-func buildAPIHistory(history []connectors.ChatMessage) []connectors.ChatMessage {
-	filtered := make([]connectors.ChatMessage, 0, len(history))
+func requestAssistantReply(chat *app.ChatService, connectorName string, modelName string, history []domain.Message) tea.Cmd {
+	return func() tea.Msg {
+		reply, err := chat.Send(context.Background(), connectorName, modelName, history)
+		if err != nil {
+			return assistantReplyMsg{err: err}
+		}
+		return assistantReplyMsg{text: reply.Content}
+	}
+}
+
+// resolveActiveConnectorName returns the connector name configured on the
+// active agent.  The actual credential lookup is done by ChatService.Send.
+func (m *AppContext) resolveActiveConnectorName() (string, error) {
+	activeAgent, found := m.resolveActiveAgent()
+	if !found {
+		return "", fmt.Errorf("no active agent set • use /agent create [name]")
+	}
+	connectorName := strings.TrimSpace(activeAgent.Connector)
+	if connectorName == "" {
+		return "", fmt.Errorf("active agent has no connector • use /agent create [name] --connector [connector-name]")
+	}
+	return connectorName, nil
+}
+
+func buildAPIHistory(history []domain.Message) []domain.Message {
+	filtered := make([]domain.Message, 0, len(history))
 	for _, message := range history {
 		switch message.Role {
 		case "system", "user", "assistant":
@@ -515,7 +537,7 @@ func buildAPIHistory(history []connectors.ChatMessage) []connectors.ChatMessage 
 	return filtered
 }
 
-func renderTranscript(history []connectors.ChatMessage) string {
+func renderTranscript(history []domain.Message) string {
 	if len(history) == 0 {
 		return "No messages yet."
 	}
@@ -607,7 +629,7 @@ func promptPanelHeight(helperVisible bool, tooltipCount int) int {
 	return base
 }
 
-func (m AppContext) withAgentSystemPrompt(history []connectors.ChatMessage) []connectors.ChatMessage {
+func (m AppContext) withAgentSystemPrompt(history []domain.Message) []domain.Message {
 	now := time.Now()
 	agentPrompt := ""
 
@@ -616,15 +638,15 @@ func (m AppContext) withAgentSystemPrompt(history []connectors.ChatMessage) []co
 		agentPrompt = applyPromptVars(strings.TrimSpace(agent.SystemPrompt), now)
 	}
 
-	augmented := make([]connectors.ChatMessage, 0, len(history)+1)
+	augmented := make([]domain.Message, 0, len(history)+1)
 	if agentPrompt != "" {
-		augmented = append(augmented, connectors.ChatMessage{Role: "system", Content: agentPrompt})
+		augmented = append(augmented, domain.Message{Role: "system", Content: agentPrompt})
 	}
 	augmented = append(augmented, history...)
 	return augmented
 }
 
-func (m *AppContext) resolveActiveAgent() (agent.Spec, bool) {
+func (m *AppContext) resolveActiveAgent() (domain.Spec, bool) {
 	return m.agents.resolveActiveAgent()
 }
 
@@ -644,7 +666,7 @@ func (m *AppContext) resourceNames(kind string) []string {
 	return m.agents.resourceNames(kind)
 }
 
-func (m *AppContext) getActiveTeam() *agent.Team {
+func (m *AppContext) getActiveTeam() *domain.Team {
 	return m.agents.getActiveTeam()
 }
 
@@ -660,8 +682,8 @@ func (m *AppContext) useTeam(name string) error {
 	return m.agents.useTeam(name)
 }
 
-func (m *AppContext) createAgent(name string) error {
-	return m.agents.createAgent(name)
+func (m *AppContext) createAgent(name string, connector string) error {
+	return m.agents.createAgent(name, connector)
 }
 
 func (m *AppContext) useAgent(name string) error {
@@ -706,6 +728,18 @@ func (m *AppContext) normalizeDefaultAgents(defaultTeam string, defaultAgent str
 
 func (m *AppContext) deleteAgent(name string) error {
 	return m.agents.deleteAgent(name)
+}
+
+func (m *AppContext) saveConnector(value domain.Connector) error {
+	return m.agents.connectors.SaveConnector(value)
+}
+
+func (m *AppContext) listConnectors() ([]domain.Connector, error) {
+	return m.agents.connectors.ListConnectors()
+}
+
+func (m *AppContext) deleteConnector(name string) error {
+	return m.agents.connectors.DeleteConnector(name)
 }
 
 func (m *AppContext) activeAgentName() string {

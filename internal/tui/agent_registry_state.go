@@ -1,4 +1,4 @@
-package core
+package tui
 
 import (
 	"fmt"
@@ -6,39 +6,42 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bernardoforcillo/bernclaw/internal/agent"
+	"github.com/bernardoforcillo/bernclaw/internal/domain"
+	"github.com/bernardoforcillo/bernclaw/internal/port"
 )
 
 type resolvedAgentRef struct {
-	Spec      agent.Spec
+	Spec      domain.Spec
 	TeamName  string
 	ScopedKey string
 }
 
 type agentRegistryState struct {
-	store            agentResourceStore
-	teams            map[string]*agent.Team
-	standaloneAgents map[string]agent.Spec
+	agents           port.AgentRepository
+	connectors       port.ConnectorRepository
+	teams            map[string]*domain.Team
+	standaloneAgents map[string]domain.Spec
 	activeTeam       string
 	activeAgent      string
 	defaultModelName string
 }
 
-func newAgentRegistryState(store agentResourceStore, defaultModelName string) agentRegistryState {
+func newAgentRegistryState(agents port.AgentRepository, connectors port.ConnectorRepository, defaultModelName string) agentRegistryState {
 	return agentRegistryState{
-		store:            store,
-		teams:            map[string]*agent.Team{},
-		standaloneAgents: map[string]agent.Spec{},
+		agents:           agents,
+		connectors:       connectors,
+		teams:            map[string]*domain.Team{},
+		standaloneAgents: map[string]domain.Spec{},
 		activeTeam:       "",
 		activeAgent:      "",
 		defaultModelName: strings.TrimSpace(defaultModelName),
 	}
 }
 
-func (state *agentRegistryState) resolveActiveAgent() (agent.Spec, bool) {
+func (state *agentRegistryState) resolveActiveAgent() (domain.Spec, bool) {
 	name := strings.TrimSpace(state.activeAgent)
 	if name == "" {
-		return agent.Spec{}, false
+		return domain.Spec{}, false
 	}
 
 	if team := state.getActiveTeam(); team != nil {
@@ -47,11 +50,11 @@ func (state *agentRegistryState) resolveActiveAgent() (agent.Spec, bool) {
 		}
 	}
 
-	if spec, found := state.standaloneAgents[normalizeEntityName(name)]; found {
+	if spec, found := state.standaloneAgents[domain.NormalizeName(name)]; found {
 		return spec, true
 	}
 
-	return agent.Spec{}, false
+	return domain.Spec{}, false
 }
 
 func (state *agentRegistryState) resolveActiveModelName() (string, error) {
@@ -83,7 +86,7 @@ func (state *agentRegistryState) listAgentNames() []string {
 			if strings.TrimSpace(spec.Name) == "" {
 				continue
 			}
-			key := normalizeEntityName(spec.Name)
+			key := domain.NormalizeName(spec.Name)
 			if _, exists := seen[key]; exists {
 				continue
 			}
@@ -96,7 +99,7 @@ func (state *agentRegistryState) listAgentNames() []string {
 		if strings.TrimSpace(spec.Name) == "" {
 			continue
 		}
-		key := normalizeEntityName(spec.Name)
+		key := domain.NormalizeName(spec.Name)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -109,40 +112,54 @@ func (state *agentRegistryState) listAgentNames() []string {
 }
 
 func (state *agentRegistryState) resourceNames(kind string) []string {
-	normalized := normalizeEntityName(kind)
+	normalized := domain.NormalizeName(kind)
 	switch normalized {
 	case "agent":
 		return state.listAgentNames()
 	case "team", "swarm":
 		return state.teamNames()
+	case "connector":
+		connectors, err := state.connectors.ListConnectors()
+		if err != nil {
+			return nil
+		}
+		names := make([]string, 0, len(connectors))
+		for _, item := range connectors {
+			name := strings.TrimSpace(item.Name)
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return names
 	default:
 		return nil
 	}
 }
 
 func (state *agentRegistryState) loadStoredResources() error {
-	teams, err := state.store.ListTeams()
+	teams, err := state.agents.ListTeams()
 	if err != nil {
 		return err
 	}
 
-	loadedTeams := map[string]*agent.Team{}
+	loadedTeams := map[string]*domain.Team{}
 	for _, item := range teams {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
 			continue
 		}
-		team := agent.NewTeam(name)
-		key := normalizeEntityName(team.Name)
+		team := domain.NewTeam(name)
+		key := domain.NormalizeName(team.Name)
 		loadedTeams[key] = &team
 	}
 
-	agents, err := state.store.ListAgents()
+	agents, err := state.agents.ListAgents()
 	if err != nil {
 		return err
 	}
 
-	standalone := map[string]agent.Spec{}
+	standalone := map[string]domain.Spec{}
 	defaultActiveTeam := ""
 	defaultActiveAgent := ""
 	for _, item := range agents {
@@ -152,7 +169,7 @@ func (state *agentRegistryState) loadStoredResources() error {
 
 		teamName := strings.TrimSpace(item.Team)
 		if teamName == "" {
-			standalone[normalizeEntityName(item.Spec.Name)] = item.Spec
+			standalone[domain.NormalizeName(item.Spec.Name)] = item.Spec
 			if item.Spec.IsDefault && defaultActiveAgent == "" {
 				defaultActiveTeam = ""
 				defaultActiveAgent = item.Spec.Name
@@ -160,10 +177,10 @@ func (state *agentRegistryState) loadStoredResources() error {
 			continue
 		}
 
-		teamKey := normalizeEntityName(teamName)
+		teamKey := domain.NormalizeName(teamName)
 		team := loadedTeams[teamKey]
 		if team == nil {
-			newTeam := agent.NewTeam(teamName)
+			newTeam := domain.NewTeam(teamName)
 			loadedTeams[teamKey] = &newTeam
 			team = &newTeam
 		}
@@ -201,7 +218,7 @@ func (state *agentRegistryState) loadStoredResources() error {
 	return nil
 }
 
-func (state *agentRegistryState) getActiveTeam() *agent.Team {
+func (state *agentRegistryState) getActiveTeam() *domain.Team {
 	if state == nil {
 		return nil
 	}
@@ -226,7 +243,7 @@ func (state *agentRegistryState) initTeam(name string) (string, error) {
 		teamName = fmt.Sprintf("team-%d", time.Now().Unix())
 	}
 
-	key := normalizeEntityName(teamName)
+	key := domain.NormalizeName(teamName)
 	if key == "" {
 		return "", fmt.Errorf("invalid team name")
 	}
@@ -234,12 +251,12 @@ func (state *agentRegistryState) initTeam(name string) (string, error) {
 		return "", fmt.Errorf("team already exists: %s", teamName)
 	}
 
-	team := agent.NewTeam(teamName)
+	team := domain.NewTeam(teamName)
 	state.teams[key] = &team
 	state.activeTeam = key
 	state.activeAgent = ""
 
-	if err := state.store.SaveTeam(teamName); err != nil {
+	if err := state.agents.SaveTeam(teamName); err != nil {
 		delete(state.teams, key)
 		state.activeTeam = ""
 		return "", err
@@ -249,7 +266,7 @@ func (state *agentRegistryState) initTeam(name string) (string, error) {
 }
 
 func (state *agentRegistryState) useTeam(name string) error {
-	key := normalizeEntityName(name)
+	key := domain.NormalizeName(name)
 	team, exists := state.teams[key]
 	if !exists || team == nil {
 		return fmt.Errorf("team not found: %s", name)
@@ -268,7 +285,7 @@ func (state *agentRegistryState) useTeam(name string) error {
 	return nil
 }
 
-func (state *agentRegistryState) createAgent(name string) error {
+func (state *agentRegistryState) createAgent(name string, connector string) error {
 	agentName := strings.TrimSpace(name)
 	if agentName == "" {
 		return fmt.Errorf("agent name is required")
@@ -284,14 +301,15 @@ func (state *agentRegistryState) createAgent(name string) error {
 			for _, existing := range team.Specs() {
 				existing.IsDefault = false
 				if err := team.Register(existing); err == nil {
-					_ = state.store.SaveAgent(existing, team.Name)
+					_ = state.agents.SaveAgent(existing, team.Name)
 				}
 			}
 		}
 
-		spec := agent.Spec{
+		spec := domain.Spec{
 			Name:         agentName,
 			ModelName:    state.defaultModelName,
+			Connector:    strings.TrimSpace(connector),
 			IsDefault:    isDefault,
 			SystemPrompt: fmt.Sprintf("You are %s agent. Be concise and helpful.", agentName),
 		}
@@ -299,7 +317,7 @@ func (state *agentRegistryState) createAgent(name string) error {
 		if err := team.Register(spec); err != nil {
 			return err
 		}
-		if err := state.store.SaveAgent(spec, team.Name); err != nil {
+		if err := state.agents.SaveAgent(spec, team.Name); err != nil {
 			_ = team.Remove(agentName)
 			return err
 		}
@@ -309,7 +327,7 @@ func (state *agentRegistryState) createAgent(name string) error {
 		return nil
 	}
 
-	key := normalizeEntityName(agentName)
+	key := domain.NormalizeName(agentName)
 	if _, found := state.standaloneAgents[key]; found {
 		return fmt.Errorf("agent already exists: %s", agentName)
 	}
@@ -318,18 +336,19 @@ func (state *agentRegistryState) createAgent(name string) error {
 		for existingKey, existing := range state.standaloneAgents {
 			existing.IsDefault = false
 			state.standaloneAgents[existingKey] = existing
-			_ = state.store.SaveAgent(existing, "")
+			_ = state.agents.SaveAgent(existing, "")
 		}
 	}
 
-	spec := agent.Spec{
+	spec := domain.Spec{
 		Name:         agentName,
 		ModelName:    state.defaultModelName,
+		Connector:    strings.TrimSpace(connector),
 		IsDefault:    isDefault,
 		SystemPrompt: fmt.Sprintf("You are %s agent. Be concise and helpful.", agentName),
 	}
 	state.standaloneAgents[key] = spec
-	if err := state.store.SaveAgent(spec, ""); err != nil {
+	if err := state.agents.SaveAgent(spec, ""); err != nil {
 		delete(state.standaloneAgents, key)
 		return err
 	}
@@ -352,7 +371,7 @@ func (state *agentRegistryState) useAgent(name string) error {
 		}
 	}
 
-	if _, found := state.standaloneAgents[normalizeEntityName(agentName)]; !found {
+	if _, found := state.standaloneAgents[domain.NormalizeName(agentName)]; !found {
 		return fmt.Errorf("agent not found: %s", agentName)
 	}
 
@@ -361,7 +380,7 @@ func (state *agentRegistryState) useAgent(name string) error {
 }
 
 func (state *agentRegistryState) getTeam(name string) (string, error) {
-	key := normalizeEntityName(name)
+	key := domain.NormalizeName(name)
 	team, ok := state.teams[key]
 	if !ok || team == nil {
 		return "", fmt.Errorf("team not found: %s", name)
@@ -370,7 +389,7 @@ func (state *agentRegistryState) getTeam(name string) (string, error) {
 }
 
 func (state *agentRegistryState) updateTeam(currentName string, nextName string) error {
-	currentKey := normalizeEntityName(currentName)
+	currentKey := domain.NormalizeName(currentName)
 	team, ok := state.teams[currentKey]
 	if !ok || team == nil {
 		return fmt.Errorf("team not found: %s", currentName)
@@ -380,7 +399,7 @@ func (state *agentRegistryState) updateTeam(currentName string, nextName string)
 	if newLabel == "" {
 		return fmt.Errorf("new team name is required")
 	}
-	newKey := normalizeEntityName(newLabel)
+	newKey := domain.NormalizeName(newLabel)
 	if newKey != currentKey {
 		if _, exists := state.teams[newKey]; exists {
 			return fmt.Errorf("team already exists: %s", newLabel)
@@ -388,7 +407,7 @@ func (state *agentRegistryState) updateTeam(currentName string, nextName string)
 	}
 
 	oldLabel := team.Name
-	oldSpecs := append([]agent.Spec{}, team.Specs()...)
+	oldSpecs := append([]domain.Spec{}, team.Specs()...)
 	team.Name = newLabel
 
 	delete(state.teams, currentKey)
@@ -398,7 +417,7 @@ func (state *agentRegistryState) updateTeam(currentName string, nextName string)
 		state.activeTeam = newKey
 	}
 
-	if err := state.store.SaveTeam(newLabel); err != nil {
+	if err := state.agents.SaveTeam(newLabel); err != nil {
 		team.Name = oldLabel
 		delete(state.teams, newKey)
 		state.teams[currentKey] = team
@@ -409,30 +428,30 @@ func (state *agentRegistryState) updateTeam(currentName string, nextName string)
 	}
 
 	for _, spec := range oldSpecs {
-		if err := state.store.SaveAgent(spec, newLabel); err != nil {
+		if err := state.agents.SaveAgent(spec, newLabel); err != nil {
 			return err
 		}
-		_ = state.store.DeleteAgent(spec.Name, oldLabel)
+		_ = state.agents.DeleteAgent(spec.Name, oldLabel)
 	}
-	_ = state.store.DeleteTeam(oldLabel)
+	_ = state.agents.DeleteTeam(oldLabel)
 
 	return nil
 }
 
 func (state *agentRegistryState) deleteTeam(name string) error {
-	key := normalizeEntityName(name)
+	key := domain.NormalizeName(name)
 	team, exists := state.teams[key]
 	if !exists || team == nil {
 		return fmt.Errorf("team not found: %s", name)
 	}
 
-	specs := append([]agent.Spec{}, team.Specs()...)
+	specs := append([]domain.Spec{}, team.Specs()...)
 	for _, spec := range specs {
-		if err := state.store.DeleteAgent(spec.Name, team.Name); err != nil {
+		if err := state.agents.DeleteAgent(spec.Name, team.Name); err != nil {
 			return err
 		}
 	}
-	if err := state.store.DeleteTeam(team.Name); err != nil {
+	if err := state.agents.DeleteTeam(team.Name); err != nil {
 		return err
 	}
 
@@ -452,12 +471,12 @@ func (state *agentRegistryState) resolveAgent(name string) (resolvedAgentRef, bo
 
 	if team := state.getActiveTeam(); team != nil {
 		if spec, found := team.Find(needle); found {
-			return resolvedAgentRef{Spec: spec, TeamName: team.Name, ScopedKey: normalizeEntityName(spec.Name)}, true
+			return resolvedAgentRef{Spec: spec, TeamName: team.Name, ScopedKey: domain.NormalizeName(spec.Name)}, true
 		}
 	}
 
-	if spec, found := state.standaloneAgents[normalizeEntityName(needle)]; found {
-		return resolvedAgentRef{Spec: spec, TeamName: "", ScopedKey: normalizeEntityName(spec.Name)}, true
+	if spec, found := state.standaloneAgents[domain.NormalizeName(needle)]; found {
+		return resolvedAgentRef{Spec: spec, TeamName: "", ScopedKey: domain.NormalizeName(spec.Name)}, true
 	}
 
 	return resolvedAgentRef{}, false
@@ -496,18 +515,18 @@ func (state *agentRegistryState) updateAgent(name string, newSystemPrompt string
 	updated.SystemPrompt = prompt
 
 	if resolved.TeamName != "" {
-		team := state.teams[normalizeEntityName(resolved.TeamName)]
+		team := state.teams[domain.NormalizeName(resolved.TeamName)]
 		if team == nil {
 			return fmt.Errorf("team not found: %s", resolved.TeamName)
 		}
 		if err := team.Register(updated); err != nil {
 			return err
 		}
-		return state.store.SaveAgent(updated, resolved.TeamName)
+		return state.agents.SaveAgent(updated, resolved.TeamName)
 	}
 
 	state.standaloneAgents[resolved.ScopedKey] = updated
-	return state.store.SaveAgent(updated, "")
+	return state.agents.SaveAgent(updated, "")
 }
 
 func (state *agentRegistryState) setDefaultAgent(name string) error {
@@ -523,20 +542,20 @@ func (state *agentRegistryState) setDefaultAgent(name string) error {
 	updated := resolved.Spec
 	updated.IsDefault = true
 	if resolved.TeamName != "" {
-		team := state.teams[normalizeEntityName(resolved.TeamName)]
+		team := state.teams[domain.NormalizeName(resolved.TeamName)]
 		if team == nil {
 			return fmt.Errorf("team not found: %s", resolved.TeamName)
 		}
 		if err := team.Register(updated); err != nil {
 			return err
 		}
-		if err := state.store.SaveAgent(updated, resolved.TeamName); err != nil {
+		if err := state.agents.SaveAgent(updated, resolved.TeamName); err != nil {
 			return err
 		}
-		state.activeTeam = normalizeEntityName(resolved.TeamName)
+		state.activeTeam = domain.NormalizeName(resolved.TeamName)
 	} else {
 		state.standaloneAgents[resolved.ScopedKey] = updated
-		if err := state.store.SaveAgent(updated, ""); err != nil {
+		if err := state.agents.SaveAgent(updated, ""); err != nil {
 			return err
 		}
 		state.activeTeam = ""
@@ -559,7 +578,7 @@ func (state *agentRegistryState) clearDefaultAgentFlags() error {
 			if err := team.Register(spec); err != nil {
 				return err
 			}
-			if err := state.store.SaveAgent(spec, team.Name); err != nil {
+			if err := state.agents.SaveAgent(spec, team.Name); err != nil {
 				return err
 			}
 		}
@@ -571,7 +590,7 @@ func (state *agentRegistryState) clearDefaultAgentFlags() error {
 		}
 		spec.IsDefault = false
 		state.standaloneAgents[key] = spec
-		if err := state.store.SaveAgent(spec, ""); err != nil {
+		if err := state.agents.SaveAgent(spec, ""); err != nil {
 			return err
 		}
 	}
@@ -580,8 +599,8 @@ func (state *agentRegistryState) clearDefaultAgentFlags() error {
 }
 
 func (state *agentRegistryState) normalizeDefaultAgents(defaultTeam string, defaultAgent string) error {
-	chosenTeamKey := normalizeEntityName(defaultTeam)
-	chosenAgentKey := normalizeEntityName(defaultAgent)
+	chosenTeamKey := domain.NormalizeName(defaultTeam)
+	chosenAgentKey := domain.NormalizeName(defaultAgent)
 	if chosenAgentKey == "" {
 		return nil
 	}
@@ -591,7 +610,7 @@ func (state *agentRegistryState) normalizeDefaultAgents(defaultTeam string, defa
 			continue
 		}
 		for _, spec := range team.Specs() {
-			shouldDefault := teamKey == chosenTeamKey && normalizeEntityName(spec.Name) == chosenAgentKey
+			shouldDefault := teamKey == chosenTeamKey && domain.NormalizeName(spec.Name) == chosenAgentKey
 			if spec.IsDefault == shouldDefault {
 				continue
 			}
@@ -599,7 +618,7 @@ func (state *agentRegistryState) normalizeDefaultAgents(defaultTeam string, defa
 			if err := team.Register(spec); err != nil {
 				return err
 			}
-			if err := state.store.SaveAgent(spec, team.Name); err != nil {
+			if err := state.agents.SaveAgent(spec, team.Name); err != nil {
 				return err
 			}
 		}
@@ -612,7 +631,7 @@ func (state *agentRegistryState) normalizeDefaultAgents(defaultTeam string, defa
 		}
 		spec.IsDefault = shouldDefault
 		state.standaloneAgents[key] = spec
-		if err := state.store.SaveAgent(spec, ""); err != nil {
+		if err := state.agents.SaveAgent(spec, ""); err != nil {
 			return err
 		}
 	}
@@ -627,29 +646,25 @@ func (state *agentRegistryState) deleteAgent(name string) error {
 	}
 
 	if resolved.TeamName != "" {
-		team := state.teams[normalizeEntityName(resolved.TeamName)]
+		team := state.teams[domain.NormalizeName(resolved.TeamName)]
 		if team == nil {
 			return fmt.Errorf("team not found: %s", resolved.TeamName)
 		}
 		if !team.Remove(resolved.Spec.Name) {
 			return fmt.Errorf("agent not found: %s", name)
 		}
-		if err := state.store.DeleteAgent(resolved.Spec.Name, resolved.TeamName); err != nil {
+		if err := state.agents.DeleteAgent(resolved.Spec.Name, resolved.TeamName); err != nil {
 			return err
 		}
 	} else {
 		delete(state.standaloneAgents, resolved.ScopedKey)
-		if err := state.store.DeleteAgent(resolved.Spec.Name, ""); err != nil {
+		if err := state.agents.DeleteAgent(resolved.Spec.Name, ""); err != nil {
 			return err
 		}
 	}
 
-	if normalizeEntityName(state.activeAgent) == normalizeEntityName(resolved.Spec.Name) {
+	if domain.NormalizeName(state.activeAgent) == domain.NormalizeName(resolved.Spec.Name) {
 		state.activeAgent = ""
 	}
 	return nil
-}
-
-func normalizeEntityName(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
 }

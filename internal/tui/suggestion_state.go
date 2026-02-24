@@ -1,4 +1,4 @@
-package core
+package tui
 
 type suggestionState struct {
 	index      int
