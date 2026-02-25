@@ -22,59 +22,67 @@ import (
 var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("252"))
+			Foreground(colorTerracotta).
+			MarginBottom(0).
+			PaddingLeft(1)
 
 	headerMetaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(colorMidGray).
+			PaddingLeft(1)
 
 	chipStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("250")).
+			Foreground(colorLightGray).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("239")).
-			Padding(0, 1)
+			BorderForeground(colorSubtleGray).
+			Padding(0, 1).
+			MarginLeft(1)
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244"))
+			Foreground(colorMidGray).
+			PaddingLeft(1)
 
 	settingsHintStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("246"))
+				Foreground(colorMidGray).
+				PaddingLeft(1)
 
 	helperStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("246"))
+			Foreground(colorMidGray).
+			PaddingLeft(1)
 
 	tooltipPanelStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("238")).
-				Padding(0, 1)
+				BorderForeground(colorSubtleGray).
+				Padding(0, 1).
+				MarginLeft(1)
 
 	tooltipTitleStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("250")).
+				Foreground(colorTerracotta).
 				Bold(true)
 
 	tooltipItemStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("247"))
+				Foreground(colorLightGray)
 
 	tooltipSelectedItemStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("252")).
-					Background(lipgloss.Color("238")).
+					Foreground(colorWhite).
+					Background(colorDarkGray).
 					Bold(true)
 
 	transcriptPanelStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("240")).
+				BorderForeground(colorSubtleGray).
 				Padding(0, 1)
 
 	promptPanelStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("239")).
+				BorderForeground(colorSubtleGray).
 				Padding(0, 1)
 
-	systemRoleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
-	userRoleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
-	assistantRoleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
-	utilityRoleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Bold(true)
-	bodyStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	thinkStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	systemRoleStyle    = lipgloss.NewStyle().Foreground(colorMidGray).Bold(true)
+	userRoleStyle      = lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
+	assistantRoleStyle = lipgloss.NewStyle().Foreground(colorTerracotta).Bold(true)
+	utilityRoleStyle   = lipgloss.NewStyle().Foreground(colorBlue).Bold(true)
+	bodyStyle          = lipgloss.NewStyle().Foreground(colorLightGray)
+	thinkStyle         = lipgloss.NewStyle().Foreground(colorMidGray).Italic(true)
 )
 
 type assistantReplyMsg struct {
@@ -116,7 +124,7 @@ func RunChatUI(cfg config.Config) error {
 func newAppContext(cfg config.Config) AppContext {
 	input := textarea.New()
 	input.Placeholder = "Type message or /command (Tab to complete)"
-	input.Prompt = "› "
+	input.Prompt = lipgloss.NewStyle().Foreground(colorTerracotta).Render("› ")
 	input.CharLimit = 0
 	input.SetHeight(2)
 	input.Focus()
@@ -209,17 +217,12 @@ func (m AppContext) View() string {
 	modelLabel := m.activeModelLabel()
 	headerMeta := lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		headerMetaStyle.Render("context"),
-		" ",
 		chipStyle.Render("team: "+teamLabel),
-		" ",
 		chipStyle.Render("model: "+modelLabel),
-		" ",
 		chipStyle.Render("agent: "+agentLabel),
-		" ",
 		headerMetaStyle.Render("/help"),
 	)
-	status := statusStyle.Render(m.statusText)
+	status := statusStyle.Italic(true).Render(m.statusText)
 	helperLine := m.commands.helperLine(m.input.Value())
 	helperSuggestions := m.currentSuggestions()
 	showTooltip := len(helperSuggestions) > 0
@@ -250,8 +253,8 @@ func (m AppContext) View() string {
 
 	transcriptPanel := transcriptPanelStyle.
 		Width(max(30, m.width-2)).
-		Render(lipgloss.JoinVertical(lipgloss.Left, headerMetaStyle.Render("Conversation"), m.viewport.View()))
-	promptSections := []string{headerMetaStyle.Render("Prompt")}
+		Render(m.viewport.View())
+	promptSections := []string{}
 	if showHelper {
 		promptSections = append(promptSections, helper)
 	}
@@ -267,8 +270,8 @@ func (m AppContext) View() string {
 	sections := []string{
 		strings.Join([]string{header, headerMeta}, "\n"),
 		transcriptPanel,
-		status,
 		promptPanel,
+		status,
 	}
 
 	return strings.Join(sections, "\n")
@@ -542,7 +545,7 @@ func buildAPIHistory(history []domain.Message) []domain.Message {
 
 func renderTranscript(history []domain.Message) string {
 	if len(history) == 0 {
-		return "No messages yet."
+		return lipgloss.NewStyle().Foreground(colorMidGray).Render("Bernclaw initialized. Ready to help.")
 	}
 
 	var out strings.Builder
